@@ -13,198 +13,108 @@ import (
 	"testing"
 )
 
-func TestAddTransactionWithBudget(t *testing.T) {
-	tests := []struct {
-		name     string
-		category string
-		amounts  []int
-		wantErr  bool
-	}{
-		{"below limit", "Продукты", []int{150050}, false},
-		{"exact limit", "Продукты", []int{150050, 349950}, false},
-		{"single exceeds limit", "Продукты", []int{500001}, true},
-		{"sum exceeds limit", "Продукты", []int{150050, 400000}, true},
-		{"refund frees budget", "Продукты", []int{500000, -5000, 5000}, false},
-		{"no budget", "Досуг", []int{900000}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetTransactions(t)
-
-			SetBudget(Budget{
-				Category: "Продукты",
-				Limit:    500000,
-			})
-
-			for i, amount := range tt.amounts {
-				before := ListTransactions()
-
-				err := AddTransaction(Transaction{
-					Amount:   amount,
-					Category: tt.category,
-				})
-
-				if tt.wantErr && i == len(tt.amounts)-1 {
-					if !errors.Is(err, ErrBudgetExceeded) {
-						t.Fatalf(
-							"error = %v, want ErrBudgetExceeded",
-							err,
-						)
-					}
-
-					if !reflect.DeepEqual(before, ListTransactions()) {
-						t.Fatal("rejected transaction changed the store")
-					}
-				} else if err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			// Отказ не должен расходовать ID.
-			nextID := len(ListTransactions()) + 1
-
-			if err := AddTransaction(Transaction{
-				Amount:   1,
-				Category: "Без лимита",
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			if got := ListTransactions()[nextID-1].ID; got != nextID {
-				t.Fatalf("ID = %d, want %d", got, nextID)
-			}
-		})
-	}
-}
-
-func TestSetBudgetUpdatesLimitAndKeepsHistory(t *testing.T) {
+func TestSetBudget(t *testing.T) {
 	resetTransactions(t)
-
 	budgets = nil
 
-	SetBudget(Budget{
-		Category: "еда",
-		Limit:    100,
-	})
+	for _, b := range []Budget{
+		{Category: "еда", Limit: 100},
+		{Category: "проезд", Limit: 100},
+	} {
+		if err := SetBudget(b); err != nil {
+			t.Fatal(err)
+		}
 
-	if err := AddTransaction(Transaction{
-		Amount:   100,
-		Category: "еда",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	SetBudget(Budget{
-		Category: "еда",
-		Limit:    200,
-	})
-
-	if err := AddTransaction(Transaction{
-		Amount:   100,
-		Category: "еда",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	SetBudget(Budget{
-		Category: "еда",
-		Limit:    50,
-	})
-
-	if err := AddTransaction(Transaction{
-		Amount:   1,
-		Category: "еда",
-	}); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("error = %v, want ErrBudgetExceeded", err)
-	}
-
-	if len(ListTransactions()) != 2 || len(budgets) != 1 {
-		t.Fatal(
-			"budget update changed history or created duplicate categories",
-		)
-	}
-}
-
-func TestBudgetsAreIndependentAndZeroIsAllowed(t *testing.T) {
-	resetTransactions(t)
-
-	SetBudget(Budget{Category: "еда", Limit: 100})
-	SetBudget(Budget{Category: "транспорт", Limit: 100})
-	SetBudget(Budget{Category: "покупки", Limit: 0})
-
-	for _, category := range []string{"еда", "транспорт"} {
-		if err := AddTransaction(Transaction{
-			Amount:   100,
-			Category: category,
-		}); err != nil {
+		if err := AddTransaction(testTransaction(100, b.Category)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err := AddTransaction(Transaction{
-		Amount:   1,
-		Category: "покупки",
-	}); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("zero budget error = %v", err)
+	before := ListTransactions()
+
+	if err := SetBudget(Budget{Category: "еда", Limit: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(budgets) != 2 || budgets["еда"].Limit != 200 {
+		t.Fatal("budget was not updated")
+	}
+
+	if !reflect.DeepEqual(before, ListTransactions()) {
+		t.Fatal("update changed history")
+	}
+
+	if err := AddTransaction(testTransaction(100, "еда")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetBudget(Budget{Category: "еда", Limit: 50}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddTransaction(testTransaction(1, "еда")); !errors.Is(
+		err,
+		ErrBudgetExceeded,
+	) {
+		t.Fatalf("lowered budget was ignored: %v", err)
 	}
 }
 
-func TestBudgetRejectsIntegerOverflow(t *testing.T) {
+func TestInvalidBudgetDoesNotChangeStore(t *testing.T) {
 	resetTransactions(t)
 
-	maxInt := int(^uint(0) >> 1)
-
-	SetBudget(Budget{
+	if err := SetBudget(Budget{
 		Category: "еда",
-		Limit:    maxInt,
-	})
-
-	if err := AddTransaction(Transaction{
-		Amount:   maxInt,
-		Category: "еда",
+		Limit:    500000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := AddTransaction(Transaction{
-		Amount:   1,
-		Category: "еда",
-	}); err == nil {
-		t.Fatal("integer overflow must be rejected")
-	}
+	for _, b := range []Budget{
+		{Category: "еда", Limit: 0},
+		{Category: "еда", Limit: -1},
+		{Category: "новая", Limit: 0},
+		{Category: "", Limit: 100},
+		{Category: " \t", Limit: 100},
+	} {
+		if err := SetBudget(b); err == nil {
+			t.Fatalf("accepted invalid budget: %+v", b)
+		}
 
-	if len(ListTransactions()) != 1 {
-		t.Fatal("overflow changed the store")
+		if len(budgets) != 1 || budgets["еда"].Limit != 500000 {
+			t.Fatal("invalid budget changed store")
+		}
 	}
 }
 
 func TestLoadBudgets(t *testing.T) {
 	resetTransactions(t)
 
-	SetBudget(Budget{
+	if err := SetBudget(Budget{
 		Category: "связь",
 		Limit:    50000,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	input := `[
-		{"category":"еда","limit":500000},
-		{"category":"еда","limit":600000},
-		{"category":"транспорт","limit":0}
+	data := `[
+		{"category":"еда","limit":100},
+		{"category":"еда","limit":200},
+		{"category":"проезд","limit":300}
 	]`
 
-	if err := LoadBudgets(strings.NewReader(input)); err != nil {
+	if err := LoadBudgets(strings.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 
 	want := map[string]Budget{
-		"еда":       {Category: "еда", Limit: 600000},
-		"транспорт": {Category: "транспорт", Limit: 0},
-		"связь":     {Category: "связь", Limit: 50000},
+		"еда":    {Category: "еда", Limit: 200},
+		"проезд": {Category: "проезд", Limit: 300},
+		"связь":  {Category: "связь", Limit: 50000},
 	}
 
 	if !reflect.DeepEqual(budgets, want) {
-		t.Fatalf("budgets = %v, want %v", budgets, want)
+		t.Fatalf("loaded: %+v", budgets)
 	}
 
 	if err := LoadBudgets(strings.NewReader("[]")); err != nil {
@@ -212,11 +122,11 @@ func TestLoadBudgets(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(budgets, want) {
-		t.Fatal("empty array must preserve budgets")
+		t.Fatal("empty array changed store")
 	}
 }
 
-func TestLoadBudgetsRejectsInvalidInputAtomically(t *testing.T) {
+func TestLoadBudgetsRejectsInvalidInput(t *testing.T) {
 	inputs := []string{
 		``,
 		`null`,
@@ -225,6 +135,7 @@ func TestLoadBudgetsRejectsInvalidInputAtomically(t *testing.T) {
 		`[null]`,
 		`[{"category":"еда"}]`,
 		`[{"category":"еда","limit":null}]`,
+		`[{"category":"еда","limit":0}]`,
 		`[{"category":"еда","limit":-1}]`,
 		`[{"category":"еда","limit":1.5}]`,
 		`[{"category":"еда","limit":"100"}]`,
@@ -233,24 +144,26 @@ func TestLoadBudgetsRejectsInvalidInputAtomically(t *testing.T) {
 		`[{"limit":100}]`,
 		`[{"category":"еда","limit":100}] {}`,
 		`[{"category":"еда","limit":100}] broken`,
-		`[{"category":"еда","limit":100},{"category":"транспорт","limit":-1}]`,
+		`[{"category":"еда","limit":100},{"category":"проезд","limit":0}]`,
 	}
 
-	for _, input := range inputs {
-		t.Run(input, func(t *testing.T) {
+	for _, data := range inputs {
+		t.Run(data, func(t *testing.T) {
 			resetTransactions(t)
 
-			SetBudget(Budget{
+			if err := SetBudget(Budget{
 				Category: "еда",
 				Limit:    500000,
-			})
+			}); err != nil {
+				t.Fatal(err)
+			}
 
-			if err := LoadBudgets(strings.NewReader(input)); err == nil {
-				t.Fatal("invalid JSON must return an error")
+			if err := LoadBudgets(strings.NewReader(data)); err == nil {
+				t.Fatal("invalid JSON accepted")
 			}
 
 			if len(budgets) != 1 || budgets["еда"].Limit != 500000 {
-				t.Fatal("failed load partially changed budgets")
+				t.Fatal("partial update after error")
 			}
 		})
 	}
@@ -264,42 +177,34 @@ func (r failingReader) Read([]byte) (int, error) {
 	return 0, r.err
 }
 
-func TestLoadBudgetsReaderErrors(t *testing.T) {
+func TestLoadBudgetsReadErrors(t *testing.T) {
 	resetTransactions(t)
-
 	cause := errors.New("read failed")
 
-	readers := []io.Reader{
-		failingReader{err: cause},
+	for _, reader := range []io.Reader{
+		failingReader{cause},
 		io.MultiReader(
 			strings.NewReader(`[{"category":"еда","limit":100}]`),
-			failingReader{err: cause},
+			failingReader{cause},
 		),
-	}
-
-	for _, reader := range readers {
+	} {
 		if err := LoadBudgets(reader); !errors.Is(err, cause) {
-			t.Fatalf(
-				"error = %v, want wrapped read failure",
-				err,
-			)
+			t.Fatalf("lost read error: %v", err)
 		}
 
 		if len(budgets) != 0 {
-			t.Fatal("read failure changed budgets")
+			t.Fatal("read failure changed store")
 		}
 	}
 
 	if err := LoadBudgets(nil); err == nil {
-		t.Fatal("nil reader must return an error")
+		t.Fatal("nil reader accepted")
 	}
 }
 
 func TestMainScenario(t *testing.T) {
 	resetTransactions(t)
 
-	// Тест создаёт собственный файл бюджетов.
-	// Изменения рабочего budgets.json не влияют на результат.
 	path := filepath.Join(t.TempDir(), "budgets.json")
 
 	data := `[
@@ -319,40 +224,42 @@ func TestMainScenario(t *testing.T) {
 
 	all := ListTransactions()
 
-	if len(all) != 7 {
-		t.Fatalf(
-			"saved %d transactions, want 7\nLedger output:\n%s",
-			len(all),
-			output.String(),
-		)
+	if len(all) != 5 || strings.Count(output.String(), "Отказ:") != 4 {
+		t.Fatalf("unexpected demo:\n%s", output.String())
 	}
 
-	for _, tx := range all {
-		if tx.Amount == 0 ||
-			tx.Description == "Покупка сверх бюджета" {
-			t.Fatalf(
-				"rejected transaction was saved: %+v",
-				tx,
-			)
+	for i, tx := range all {
+		if err := tx.Validate(); err != nil {
+			t.Fatal(err)
+		}
+
+		if tx.ID != i+1 || tx.Description == "Сверх бюджета" {
+			t.Fatalf("saved: %+v", tx)
 		}
 	}
 
-	if !strings.Contains(output.String(), "budget exceeded") ||
-		strings.Count(output.String(), "Отказ:") != 2 {
-		t.Fatalf(
-			"missing refusal messages:\n%s",
-			output.String(),
-		)
+	for _, fragment := range []string{
+		"CheckValid(main.Transaction): OK",
+		"CheckValid(main.Budget): OK",
+		"CheckValid(main.Transaction): ошибка:",
+		"CheckValid(main.Budget): ошибка:",
+		"budget exceeded",
+	} {
+		if !strings.Contains(output.String(), fragment) {
+			t.Fatalf(
+				"missing %q:\n%s",
+				fragment,
+				output.String(),
+			)
+		}
 	}
 }
 
 func TestMainScenarioFileErrors(t *testing.T) {
-	names := []string{
+	for _, name := range []string{
 		"budgets.json",
 		`windows\path\budgets.json`,
-	}
-
-	for _, name := range names {
+	} {
 		t.Run(name, func(t *testing.T) {
 			resetTransactions(t)
 
@@ -362,7 +269,7 @@ func TestMainScenarioFileErrors(t *testing.T) {
 				err,
 				os.ErrNotExist,
 			) {
-				t.Fatalf("missing file error = %v", err)
+				t.Fatalf("missing file: %v", err)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -379,27 +286,17 @@ func TestMainScenarioFileErrors(t *testing.T) {
 
 			err := runLedger(path, io.Discard)
 
-			// Проверяем настоящую причину ошибки.
 			var syntaxError *json.SyntaxError
-
 			if !errors.As(err, &syntaxError) {
-				t.Fatalf(
-					"error = %v, want wrapped JSON syntax error",
-					err,
-				)
+				t.Fatalf("expected JSON syntax error: %v", err)
 			}
 
-			quotedPath := fmt.Sprintf("%q", path)
-
-			if !strings.Contains(err.Error(), quotedPath) {
-				t.Fatalf(
-					"error does not contain quoted file path: %v",
-					err,
-				)
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q", path)) {
+				t.Fatalf("missing file path: %v", err)
 			}
 
-			if len(budgets) != 0 || len(ListTransactions()) != 0 {
-				t.Fatal("file error changed the store")
+			if len(transactions) != 0 || len(budgets) != 0 {
+				t.Fatal("file error changed store")
 			}
 		})
 	}

@@ -14,10 +14,44 @@ func main() {
 	}
 }
 
-// runLedger содержит сценарий main,
-// чтобы его можно было проверить автоматическими тестами
 func runLedger(budgetFile string, out io.Writer) error {
 	fmt.Fprintln(out, "Ledger service started")
+
+	// Один интерфейс — разные типы
+	// CheckValid только проверяет данные и ничего не сохраняет
+	checks := []Validatable{
+		Transaction{
+			Amount:   10000,
+			Category: "Продукты",
+			Date:     "2026-10-10",
+		},
+		Budget{
+			Category: "Продукты",
+			Limit:    500000,
+		},
+		Transaction{
+			Amount:   -100,
+			Category: "Продукты",
+			Date:     "2026-10-10",
+		},
+		Budget{
+			Category: " ",
+			Limit:    500000,
+		},
+	}
+
+	for _, value := range checks {
+		if err := CheckValid(value); err != nil {
+			fmt.Fprintf(
+				out,
+				"CheckValid(%T): ошибка: %v\n",
+				value,
+				err,
+			)
+		} else {
+			fmt.Fprintf(out, "CheckValid(%T): OK\n", value)
+		}
+	}
 
 	file, err := os.Open(budgetFile)
 	if err != nil {
@@ -37,79 +71,70 @@ func runLedger(budgetFile string, out io.Writer) error {
 		)
 	}
 
-	fmt.Fprintf(
-		out,
-		"Бюджеты загружены из %s\n",
-		budgetFile,
-	)
-
-	// Демонстрация добавления бюджета.
-	SetBudget(Budget{
-		Category: "Обучение",
-		Limit:    30000,
-	})
-
-	// Демонстрация обновления бюджета.
-	SetBudget(Budget{
-		Category: "Обучение",
-		Limit:    50000,
-	})
+	// Добавление бюджета, затем его обновление
+	for _, limit := range []int{30000, 50000} {
+		if err := SetBudget(Budget{
+			Category: "Обучение",
+			Limit:    limit,
+		}); err != nil {
+			return err
+		}
+	}
 
 	examples := []Transaction{
 		{
 			Amount:      150050,
 			Category:    "Продукты",
-			Description: "Покупка в магазине",
-			Date:        "2026-10-03",
+			Description: "Магазин",
+			Date:        "2026-10-10",
 		},
 		{
 			Amount:      6500,
 			Category:    "Транспорт",
-			Description: "Проезд в метро",
-			Date:        "2026-10-03",
+			Description: "Метро",
+			Date:        "2026-10-10",
 		},
 		{
 			Amount:      39900,
 			Category:    "Обучение",
-			Description: "Покупка книги после увеличения лимита",
-			Date:        "2026-10-03",
+			Description: "Книга",
+			Date:        "2026-10-10",
 		},
-		// 150050 + 400000 > 500000: ожидается отказ.
 		{
 			Amount:      400000,
 			Category:    "Продукты",
-			Description: "Покупка сверх бюджета",
-			Date:        "2026-10-03",
+			Description: "Сверх бюджета",
+			Date:        "2026-10-10",
 		},
-		// 150050 + 349950 = 500000: операция допустима.
 		{
 			Amount:      349950,
 			Category:    "Продукты",
-			Description: "Покупка в пределах остатка бюджета",
-			Date:        "2026-10-03",
-		},
-		{
-			Amount:      -5000,
-			Category:    "Продукты",
-			Description: "Возврат покупки",
-			Date:        "2026-10-03",
-		},
-		{
-			Amount:      5000,
-			Category:    "Продукты",
-			Description: "Покупка на сумму возврата",
-			Date:        "2026-10-03",
+			Description: "До точного лимита",
+			Date:        "2026-10-10",
 		},
 		{
 			Amount:      100000,
 			Category:    "Досуг",
-			Description: "Категория без бюджета",
-			Date:        "2026-10-03",
+			Description: "Без бюджета",
+			Date:        "2026-10-10",
 		},
 		{
-			Amount:      0,
-			Category:    "Проверка",
-			Description: "Недопустимая нулевая сумма",
+			Amount:      -5000,
+			Category:    "Продукты",
+			Description: "Отрицательная сумма",
+			Date:        "2026-10-10",
+		},
+		{
+			Amount:      100,
+			Category:    " ",
+			Description: "Пустая категория",
+			Date:        "2026-10-10",
+		},
+		{
+			Amount:      100,
+			Category:    "Досуг",
+			Description: "Неверная дата",
+			Date:        "2026-02-30",
 		},
 	}
 
@@ -124,27 +149,16 @@ func runLedger(budgetFile string, out io.Writer) error {
 			continue
 		}
 
-		fmt.Fprintf(
-			out,
-			"Добавлено: %s (%d коп., %s)\n",
-			tx.Description,
-			tx.Amount,
-			tx.Category,
-		)
+		fmt.Fprintf(out, "Добавлено: %s\n", tx.Description)
 	}
 
 	all := ListTransactions()
-
-	fmt.Fprintf(
-		out,
-		"\nСохранено транзакций: %d\n",
-		len(all),
-	)
+	fmt.Fprintf(out, "Сохранено транзакций: %d\n", len(all))
 
 	for _, tx := range all {
 		fmt.Fprintf(
 			out,
-			"ID: %d | Сумма: %d коп. | Категория: %s | Описание: %s | Дата: %s\n",
+			"ID: %d | %d коп. | %s | %s | %s\n",
 			tx.ID,
 			tx.Amount,
 			tx.Category,

@@ -8,29 +8,48 @@ import (
 	"strings"
 )
 
-// Budget — фиксированный бюджет категории за всё время работы процесса.
-// Limit, как и Transaction.Amount, задаётся в копейках
+// Budget — фиксированный бюджет категории
+// Limit задаётся в копейках
 type Budget struct {
 	Category string `json:"category"`
 	Limit    int    `json:"limit"`
 }
 
+// Validate проверяет только данные бюджета
+// Метод не логирует и не изменяет хранилище
+func (b Budget) Validate() error {
+	if b.Limit <= 0 {
+		return errors.New("лимит бюджета должен быть положительным")
+	}
+
+	if strings.TrimSpace(b.Category) == "" {
+		return errors.New("категория бюджета не должна быть пустой")
+	}
+
+	return nil
+}
+
 var budgets = make(map[string]Budget)
 
-// ErrBudgetExceeded позволяет распознать превышение через errors.Is
 var ErrBudgetExceeded = errors.New("budget exceeded")
 
-// SetBudget добавляет или заменяет бюджет; историю транзакций не изменяет
-// LoadBudgets проверяет эти условия для внешних JSON-данных
-func SetBudget(b Budget) {
+// SetBudget добавляет или заменяет только корректный бюджет
+// При ошибке существующий бюджет остаётся без изменений
+func SetBudget(b Budget) error {
+	if err := b.Validate(); err != nil {
+		return fmt.Errorf("бюджет: %w", err)
+	}
+
 	if budgets == nil {
 		budgets = make(map[string]Budget)
 	}
+
 	budgets[b.Category] = b
+	return nil
 }
 
-// LoadBudgets читает один JSON-массив. При любой ошибке бюджеты не изменяются
-// Если категория повторяется, последнее значение заменяет предыдущие
+// LoadBudgets читает один JSON-массив
+// Все объекты проверяются до изменения хранилища
 func LoadBudgets(r io.Reader) error {
 	if r == nil {
 		return errors.New("загрузка бюджетов: источник чтения не задан")
@@ -39,11 +58,9 @@ func LoadBudgets(r io.Reader) error {
 	decoder := json.NewDecoder(r)
 	decoder.DisallowUnknownFields()
 
-	// Указатель отличает отсутствующий/null limit от допустимого нулевого лимита.
-	var input []struct {
-		Category string `json:"category"`
-		Limit    *int   `json:"limit"`
-	}
+	// Отсутствующий или null limit даст 0,
+	// который будет отклонён методом Validate.
+	var input []Budget
 
 	if err := decoder.Decode(&input); err != nil {
 		return fmt.Errorf(
@@ -66,33 +83,32 @@ func LoadBudgets(r io.Reader) error {
 				err,
 			)
 		}
+
 		return errors.New(
 			"загрузка бюджетов: после массива обнаружено лишнее JSON-значение",
 		)
 	}
 
-	// Сначала проверяем весь массив, чтобы избежать частичной загрузки.
+	// Сначала проверяем весь массив
 	for i, item := range input {
-		if strings.TrimSpace(item.Category) == "" {
+		if err := item.Validate(); err != nil {
 			return fmt.Errorf(
-				"загрузка бюджетов: объект %d: category должна быть непустой строкой",
+				"загрузка бюджетов: объект %d: %w",
 				i+1,
-			)
-		}
-
-		if item.Limit == nil || *item.Limit < 0 {
-			return fmt.Errorf(
-				"загрузка бюджетов: объект %d: limit обязателен и должен быть неотрицательным целым числом копеек",
-				i+1,
+				err,
 			)
 		}
 	}
 
-	for _, item := range input {
-		SetBudget(Budget{
-			Category: item.Category,
-			Limit:    *item.Limit,
-		})
+	// После успешной проверки добавляем бюджеты
+	for i, item := range input {
+		if err := SetBudget(item); err != nil {
+			return fmt.Errorf(
+				"загрузка бюджетов: объект %d: %w",
+				i+1,
+				err,
+			)
+		}
 	}
 
 	return nil
