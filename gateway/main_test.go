@@ -1,38 +1,74 @@
 package main
 
 import (
-	"net/http"
+	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestGateway(t *testing.T) {
 	tests := []struct {
-		name   string
 		method string
 		path   string
-		status int
 		body   string
+		allow  string
+		status int
 	}{
-		{"ping", http.MethodGet, "/ping", http.StatusOK, "pong"},
-		{"unsupported method", http.MethodPost, "/ping", http.StatusMethodNotAllowed, "method not allowed\n"},
-		{"unknown path", http.MethodGet, "/missing", http.StatusNotFound, "404 page not found\n"},
+		{
+			"GET", "/ping",
+			`{"message":"pong"}`, "", 200,
+		},
+		{
+			"POST", "/ping",
+			`{"error":"method not allowed"}`, "GET", 405,
+		},
+		{
+			"GET", "/missing",
+			`{"error":"not found"}`, "", 404,
+		},
+		{
+			"GET", "/api/transactions",
+			`[]`, "", 200,
+		},
+		{
+			"GET", "/api/budgets",
+			`[]`, "", 200,
+		},
+		{
+			"DELETE", "/api/transactions",
+			`{"error":"method not allowed"}`, "GET, POST", 405,
+		},
+		{
+			"PUT", "/api/budgets",
+			`{"error":"method not allowed"}`, "GET, POST", 405,
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request := httptest.NewRequest(tt.method, tt.path, nil)
-			response := httptest.NewRecorder()
-			newHandler().ServeHTTP(response, request)
+		t.Run(tt.method+tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(tt.method, tt.path, nil)
 
-			if response.Code != tt.status {
-				t.Fatalf("status = %d, want %d", response.Code, tt.status)
+			newHandler().ServeHTTP(w, r)
+
+			if w.Code != tt.status ||
+				strings.TrimSpace(w.Body.String()) != tt.body {
+				t.Fatalf(
+					"status=%d body=%s",
+					w.Code,
+					w.Body.String(),
+				)
 			}
-			if response.Body.String() != tt.body {
-				t.Errorf("body = %q, want %q", response.Body.String(), tt.body)
+
+			if w.Header().Get("Content-Type") !=
+				"application/json; charset=utf-8" ||
+				!json.Valid(w.Body.Bytes()) {
+				t.Fatal("response is not JSON")
 			}
-			if tt.status == http.StatusMethodNotAllowed && response.Header().Get("Allow") != "GET" {
-				t.Error("405 response must contain Allow: GET")
+
+			if w.Header().Get("Allow") != tt.allow {
+				t.Fatal("wrong Allow header")
 			}
 		})
 	}

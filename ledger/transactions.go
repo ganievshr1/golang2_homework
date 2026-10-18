@@ -1,4 +1,4 @@
-package main
+package ledger
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// Transaction представляет финансовую транзакцию
 type Transaction struct {
 	ID          int
 	Amount      int // Сумма в копейках.
@@ -16,15 +15,17 @@ type Transaction struct {
 	Date        string // Формат YYYY-MM-DD.
 }
 
-// Validate проверяет поля и не изменяет объект или хранилище
-// Метод не выполняет логирование.
 func (tx Transaction) Validate() error {
 	if tx.Amount <= 0 {
-		return errors.New("сумма транзакции должна быть положительной")
+		return errors.New(
+			"сумма транзакции должна быть положительной",
+		)
 	}
 
 	if strings.TrimSpace(tx.Category) == "" {
-		return errors.New("категория транзакции не должна быть пустой")
+		return errors.New(
+			"категория транзакции не должна быть пустой",
+		)
 	}
 
 	if _, err := time.Parse("2006-01-02", tx.Date); err != nil {
@@ -37,12 +38,10 @@ func (tx Transaction) Validate() error {
 	return nil
 }
 
-// Хранилище существует только во время работы процесса
-// Вызовы функций в этой версии выполняются последовательно
+// Хранилище существует только во время работы процесса.
+// Gateway синхронизирует обращения к нему через свой адаптер.
 var transactions = make([]Transaction, 0)
 
-// AddTransaction сначала проверяет поля, затем бюджет,
-// после чего сохраняет транзакцию с автоматически назначенным ID
 func AddTransaction(tx Transaction) error {
 	if err := tx.Validate(); err != nil {
 		return fmt.Errorf("транзакция: %w", err)
@@ -79,19 +78,18 @@ func AddTransaction(tx Transaction) error {
 		}
 	}
 
-	// Хранилище меняется только после всех проверок
 	tx.ID = len(transactions) + 1
 	transactions = append(transactions, tx)
 
 	return nil
 }
 
-// addAmounts защищает расчёт от переполнения int
 func addAmounts(a, b int) (int, error) {
 	maxInt := int(^uint(0) >> 1)
 	minInt := -maxInt - 1
 
-	if (b > 0 && a > maxInt-b) || (b < 0 && a < minInt-b) {
+	if (b > 0 && a > maxInt-b) ||
+		(b < 0 && a < minInt-b) {
 		return 0, errors.New(
 			"сумма транзакций категории выходит за диапазон int",
 		)
@@ -100,7 +98,6 @@ func addAmounts(a, b int) (int, error) {
 	return a + b, nil
 }
 
-// ListTransactions возвращает независимую копию списка
 func ListTransactions() []Transaction {
 	result := make([]Transaction, len(transactions))
 	copy(result, transactions)

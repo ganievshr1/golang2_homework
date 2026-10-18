@@ -1,4 +1,4 @@
-package main
+package ledger
 
 import (
 	"errors"
@@ -14,17 +14,23 @@ func TestValidate(t *testing.T) {
 	}{
 		{
 			"valid transaction",
-			Transaction{Amount: 100, Category: "еда", Date: "2026-10-10"},
+			Transaction{
+				Amount: 100, Category: "еда", Date: "2026-10-10",
+			},
 			"",
 		},
 		{
 			"zero amount",
-			Transaction{Amount: 0, Category: "еда", Date: "2026-10-10"},
+			Transaction{
+				Amount: 0, Category: "еда", Date: "2026-10-10",
+			},
 			"сумма",
 		},
 		{
 			"negative amount",
-			Transaction{Amount: -1, Category: "еда", Date: "2026-10-10"},
+			Transaction{
+				Amount: -1, Category: "еда", Date: "2026-10-10",
+			},
 			"сумма",
 		},
 		{
@@ -34,7 +40,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			"blank transaction category",
-			Transaction{Amount: 100, Category: " \t", Date: "2026-10-10"},
+			Transaction{
+				Amount: 100, Category: " \t", Date: "2026-10-10",
+			},
 			"категория",
 		},
 		{
@@ -44,29 +52,57 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			"wrong date format",
-			Transaction{Amount: 100, Category: "еда", Date: "10.10.2026"},
+			Transaction{
+				Amount: 100, Category: "еда", Date: "10.10.2026",
+			},
 			"дата",
 		},
 		{
 			"impossible date",
-			Transaction{Amount: 100, Category: "еда", Date: "2026-02-30"},
+			Transaction{
+				Amount: 100, Category: "еда", Date: "2026-02-30",
+			},
 			"дата",
 		},
 		{
 			"leap year",
-			Transaction{Amount: 100, Category: "еда", Date: "2024-02-29"},
+			Transaction{
+				Amount: 100, Category: "еда", Date: "2024-02-29",
+			},
 			"",
 		},
 		{
 			"not leap year",
-			Transaction{Amount: 100, Category: "еда", Date: "2025-02-29"},
+			Transaction{
+				Amount: 100, Category: "еда", Date: "2025-02-29",
+			},
 			"дата",
 		},
-		{"valid budget", Budget{Category: "еда", Limit: 100}, ""},
-		{"zero limit", Budget{Category: "еда", Limit: 0}, "лимит"},
-		{"negative limit", Budget{Category: "еда", Limit: -1}, "лимит"},
-		{"empty budget category", Budget{Limit: 100}, "категория"},
-		{"blank budget category", Budget{Category: " \t", Limit: 100}, "категория"},
+		{
+			"valid budget",
+			Budget{Category: "еда", Limit: 100},
+			"",
+		},
+		{
+			"zero limit",
+			Budget{Category: "еда", Limit: 0},
+			"лимит",
+		},
+		{
+			"negative limit",
+			Budget{Category: "еда", Limit: -1},
+			"лимит",
+		},
+		{
+			"empty budget category",
+			Budget{Limit: 100},
+			"категория",
+		},
+		{
+			"blank budget category",
+			Budget{Category: " \t", Limit: 100},
+			"категория",
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,8 +125,6 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// Дополнительный тип показывает, что CheckValid
-// работает не только с Transaction и Budget
 type validationProbe struct {
 	called bool
 	err    error

@@ -1,29 +1,30 @@
-package main
+package ledger
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
-// Budget — фиксированный бюджет категории
-// Limit задаётся в копейках
 type Budget struct {
 	Category string `json:"category"`
-	Limit    int    `json:"limit"`
+	Limit    int    `json:"limit"` // Копейки.
 }
 
-// Validate проверяет только данные бюджета
-// Метод не логирует и не изменяет хранилище
 func (b Budget) Validate() error {
 	if b.Limit <= 0 {
-		return errors.New("лимит бюджета должен быть положительным")
+		return errors.New(
+			"лимит бюджета должен быть положительным",
+		)
 	}
 
 	if strings.TrimSpace(b.Category) == "" {
-		return errors.New("категория бюджета не должна быть пустой")
+		return errors.New(
+			"категория бюджета не должна быть пустой",
+		)
 	}
 
 	return nil
@@ -33,8 +34,6 @@ var budgets = make(map[string]Budget)
 
 var ErrBudgetExceeded = errors.New("budget exceeded")
 
-// SetBudget добавляет или заменяет только корректный бюджет
-// При ошибке существующий бюджет остаётся без изменений
 func SetBudget(b Budget) error {
 	if err := b.Validate(); err != nil {
 		return fmt.Errorf("бюджет: %w", err)
@@ -48,18 +47,16 @@ func SetBudget(b Budget) error {
 	return nil
 }
 
-// LoadBudgets читает один JSON-массив
-// Все объекты проверяются до изменения хранилища
 func LoadBudgets(r io.Reader) error {
 	if r == nil {
-		return errors.New("загрузка бюджетов: источник чтения не задан")
+		return errors.New(
+			"загрузка бюджетов: источник чтения не задан",
+		)
 	}
 
 	decoder := json.NewDecoder(r)
 	decoder.DisallowUnknownFields()
 
-	// Отсутствующий или null limit даст 0,
-	// который будет отклонён методом Validate.
 	var input []Budget
 
 	if err := decoder.Decode(&input); err != nil {
@@ -89,7 +86,7 @@ func LoadBudgets(r io.Reader) error {
 		)
 	}
 
-	// Сначала проверяем весь массив
+	// Сначала проверяем весь массив.
 	for i, item := range input {
 		if err := item.Validate(); err != nil {
 			return fmt.Errorf(
@@ -100,7 +97,7 @@ func LoadBudgets(r io.Reader) error {
 		}
 	}
 
-	// После успешной проверки добавляем бюджеты
+	// Записываем только после успешной проверки.
 	for i, item := range input {
 		if err := SetBudget(item); err != nil {
 			return fmt.Errorf(
@@ -112,4 +109,18 @@ func LoadBudgets(r io.Reader) error {
 	}
 
 	return nil
+}
+
+func ListBudgets() []Budget {
+	result := make([]Budget, 0, len(budgets))
+
+	for _, b := range budgets {
+		result = append(result, b)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Category < result[j].Category
+	})
+
+	return result
 }

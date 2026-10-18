@@ -1,4 +1,4 @@
-package main
+package ledger
 
 import (
 	"bytes"
@@ -32,7 +32,10 @@ func TestSetBudget(t *testing.T) {
 
 	before := ListTransactions()
 
-	if err := SetBudget(Budget{Category: "еда", Limit: 200}); err != nil {
+	if err := SetBudget(Budget{
+		Category: "еда",
+		Limit:    200,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,7 +51,10 @@ func TestSetBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := SetBudget(Budget{Category: "еда", Limit: 50}); err != nil {
+	if err := SetBudget(Budget{
+		Category: "еда",
+		Limit:    50,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +168,8 @@ func TestLoadBudgetsRejectsInvalidInput(t *testing.T) {
 				t.Fatal("invalid JSON accepted")
 			}
 
-			if len(budgets) != 1 || budgets["еда"].Limit != 500000 {
+			if len(budgets) != 1 ||
+				budgets["еда"].Limit != 500000 {
 				t.Fatal("partial update after error")
 			}
 		})
@@ -184,7 +191,9 @@ func TestLoadBudgetsReadErrors(t *testing.T) {
 	for _, reader := range []io.Reader{
 		failingReader{cause},
 		io.MultiReader(
-			strings.NewReader(`[{"category":"еда","limit":100}]`),
+			strings.NewReader(
+				`[{"category":"еда","limit":100}]`,
+			),
 			failingReader{cause},
 		),
 	} {
@@ -218,13 +227,14 @@ func TestMainScenario(t *testing.T) {
 
 	var output bytes.Buffer
 
-	if err := runLedger(path, &output); err != nil {
+	if err := RunDemo(path, &output); err != nil {
 		t.Fatal(err)
 	}
 
 	all := ListTransactions()
 
-	if len(all) != 5 || strings.Count(output.String(), "Отказ:") != 4 {
+	if len(all) != 5 ||
+		strings.Count(output.String(), "Отказ:") != 4 {
 		t.Fatalf("unexpected demo:\n%s", output.String())
 	}
 
@@ -239,10 +249,10 @@ func TestMainScenario(t *testing.T) {
 	}
 
 	for _, fragment := range []string{
-		"CheckValid(main.Transaction): OK",
-		"CheckValid(main.Budget): OK",
-		"CheckValid(main.Transaction): ошибка:",
-		"CheckValid(main.Budget): ошибка:",
+		"CheckValid(ledger.Transaction): OK",
+		"CheckValid(ledger.Budget): OK",
+		"CheckValid(ledger.Transaction): ошибка:",
+		"CheckValid(ledger.Budget): ошибка:",
 		"budget exceeded",
 	} {
 		if !strings.Contains(output.String(), fragment) {
@@ -265,7 +275,7 @@ func TestMainScenarioFileErrors(t *testing.T) {
 
 			path := filepath.Join(t.TempDir(), name)
 
-			if err := runLedger(path, io.Discard); !errors.Is(
+			if err := RunDemo(path, io.Discard); !errors.Is(
 				err,
 				os.ErrNotExist,
 			) {
@@ -284,14 +294,17 @@ func TestMainScenarioFileErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			err := runLedger(path, io.Discard)
+			err := RunDemo(path, io.Discard)
 
 			var syntaxError *json.SyntaxError
 			if !errors.As(err, &syntaxError) {
 				t.Fatalf("expected JSON syntax error: %v", err)
 			}
 
-			if !strings.Contains(err.Error(), fmt.Sprintf("%q", path)) {
+			if !strings.Contains(
+				err.Error(),
+				fmt.Sprintf("%q", path),
+			) {
 				t.Fatalf("missing file path: %v", err)
 			}
 
@@ -299,5 +312,36 @@ func TestMainScenarioFileErrors(t *testing.T) {
 				t.Fatal("file error changed store")
 			}
 		})
+	}
+}
+
+func TestListBudgetsReturnsSortedCopy(t *testing.T) {
+	resetTransactions(t)
+
+	if got := ListBudgets(); got == nil || len(got) != 0 {
+		t.Fatal("expected non-nil empty slice")
+	}
+
+	for _, b := range []Budget{
+		{Category: "b", Limit: 200},
+		{Category: "a", Limit: 100},
+	} {
+		if err := SetBudget(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := ListBudgets()
+
+	if len(got) != 2 ||
+		got[0].Category != "a" ||
+		got[1].Category != "b" {
+		t.Fatalf("wrong order: %+v", got)
+	}
+
+	got[0].Limit = 999
+
+	if ListBudgets()[0].Limit != 100 {
+		t.Fatal("list is not a copy")
 	}
 }

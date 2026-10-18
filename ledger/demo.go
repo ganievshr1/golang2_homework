@@ -1,24 +1,16 @@
-package main
+package ledger
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"os"
 )
 
-func main() {
-	if err := runLedger("budgets.json", os.Stdout); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func runLedger(budgetFile string, out io.Writer) error {
+// RunDemo запускает консольные примеры предыдущих заданий.
+func RunDemo(budgetFile string, out io.Writer) error {
 	fmt.Fprintln(out, "Ledger service started")
 
-	// Один интерфейс — разные типы
-	// CheckValid только проверяет данные и ничего не сохраняет
 	checks := []Validatable{
 		Transaction{
 			Amount:   10000,
@@ -71,7 +63,6 @@ func runLedger(budgetFile string, out io.Writer) error {
 		)
 	}
 
-	// Добавление бюджета, затем его обновление
 	for _, limit := range []int{30000, 50000} {
 		if err := SetBudget(Budget{
 			Category: "Обучение",

@@ -1,26 +1,15 @@
 package main
 
 import (
-	"io"
 	"log"
 	"net/http"
 	"time"
+
+	"example.com/finance-services/gateway/internal/api"
 )
 
 func newHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "pong")
-	})
-	return mux
+	return api.NewHandler(log.Default())
 }
 
 func main() {
@@ -28,6 +17,9 @@ func main() {
 		Addr:              ":8080",
 		Handler:           newHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Println("Gateway service started on http://localhost:8080")

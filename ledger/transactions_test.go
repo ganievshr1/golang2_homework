@@ -1,4 +1,4 @@
-package main
+package ledger
 
 import (
 	"errors"
@@ -102,7 +102,6 @@ func TestTransactionBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Сумма двух операций точно достигает лимита.
 	for _, amount := range []int{150050, 349950} {
 		if err := AddTransaction(testTransaction(amount, "еда")); err != nil {
 			t.Fatal(err)
@@ -122,7 +121,6 @@ func TestTransactionBudget(t *testing.T) {
 		t.Fatal("budget rejection changed store")
 	}
 
-	// Категория без бюджета.
 	if err := AddTransaction(testTransaction(900000, "досуг")); err != nil {
 		t.Fatal(err)
 	}
@@ -151,8 +149,6 @@ func TestTransactionOverflow(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Проверяем также случай установки бюджета
-		// после накопления больших сумм без ограничения
 		if lateBudget {
 			if err := AddTransaction(testTransaction(1, "еда")); err != nil {
 				t.Fatal(err)
