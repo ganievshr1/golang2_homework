@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -45,7 +46,7 @@ func request(
 		)
 	}
 
-	if w.Header().Get("Content-Type") != jsonContentType ||
+	if w.Header().Get("Content-Type") != "application/json; charset=utf-8" ||
 		!json.Valid(w.Body.Bytes()) {
 		t.Fatalf("invalid JSON response: %s", w.Body.String())
 	}
@@ -74,125 +75,149 @@ func transactionJSON(amount int, category string) string {
 	return string(data)
 }
 
-func TestLedgerHTTP(t *testing.T) {
-	var logs bytes.Buffer
-	h := NewHandler(log.New(&logs, "", 0))
-	s := ledgerStore{}
+// Тесты с настоящим Ledger выполняются последовательно.
+// Сброс выполняется до сценария и после завершения всех его запросов.
+func resetLedger(t *testing.T) {
+	t.Helper()
+	ledger.Reset()
+	t.Cleanup(ledger.Reset)
+}
 
-	before := len(s.ListTransactions())
-	category := fmt.Sprintf("еда-%d", before)
-
-	budgetBody := fmt.Sprintf(
-		`{"category":%q,"limit":1000}`,
-		category,
-	)
-
-	w := request(
-		t, h, "POST", "/api/budgets", budgetBody, 201,
-	)
-
-	var budget BudgetResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &budget); err != nil ||
-		budget.Category != category ||
-		budget.Limit != 1000 {
-		t.Fatalf("budget response: %s", w.Body.String())
+func TestBudgetsHTTP(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		status int
+		update bool
+	}{
+		{"ok", `{"category":"еда","limit":5000}`, 201, false},
+		{"update", `{"category":"еда","limit":5000}`, 201, true},
+		{"bad_json", `{"category":`, 400, false},
+		{"zero_limit", `{"category":"еда","limit":0}`, 400, false},
+		{"negative_limit", `{"category":"еда","limit":-1}`, 400, false},
+		{"empty_category", `{"category":"","limit":5000}`, 400, false},
+		{"blank_category", `{"category":" ","limit":5000}`, 400, false},
 	}
 
-	for i, amount := range []int{450, 550} {
-		w = request(
-			t, h, "POST", "/api/transactions",
-			transactionJSON(amount, category), 201,
-		)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetLedger(t)
+			h := NewHandler(log.New(io.Discard, "", 0))
 
-		var tx TransactionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &tx); err != nil {
-			t.Fatal(err)
-		}
-
-		if tx.ID != before+i+1 ||
-			tx.Amount != amount ||
-			tx.Category != category ||
-			tx.Description != "Ланч" ||
-			tx.Date != "2026-10-18" {
-			t.Fatalf("transaction response: %+v", tx)
-		}
-	}
-
-	w = request(
-		t, h, "POST", "/api/transactions",
-		transactionJSON(1, category), 409,
-	)
-
-	if strings.TrimSpace(w.Body.String()) !=
-		`{"error":"budget exceeded"}` {
-		t.Fatal(w.Body.String())
-	}
-
-	request(
-		t, h, "POST", "/api/transactions",
-		transactionJSON(-1, category), 400,
-	)
-
-	request(
-		t, h, "POST", "/api/budgets",
-		fmt.Sprintf(`{"category":%q,"limit":0}`, category),
-		400,
-	)
-
-	if len(s.ListTransactions()) != before+2 {
-		t.Fatal("rejected transaction was saved")
-	}
-
-	request(
-		t, h, "POST", "/api/budgets",
-		fmt.Sprintf(`{"category":%q,"limit":1100}`, category),
-		201,
-	)
-
-	request(
-		t, h, "POST", "/api/transactions",
-		transactionJSON(100, category), 201,
-	)
-
-	w = request(t, h, "GET", "/api/transactions", "", 200)
-
-	var all []TransactionResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &all); err != nil ||
-		len(all) != before+3 ||
-		all[len(all)-1].ID != before+3 {
-		t.Fatalf("wrong saved history: %s", w.Body.String())
-	}
-
-	w = request(t, h, "GET", "/api/budgets", "", 200)
-
-	var budgets []BudgetResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &budgets); err != nil {
-		t.Fatal(err)
-	}
-
-	found := 0
-	for _, b := range budgets {
-		if b.Category == category {
-			found++
-			if b.Limit != 1100 {
-				t.Fatal("budget update failed")
+			if tt.update {
+				request(t, h, "POST", "/api/budgets",
+					`{"category":"еда","limit":1000}`, 201)
 			}
-		}
+
+			w := request(t, h, "POST", "/api/budgets", tt.body, tt.status)
+			want := make([]BudgetResponse, 0)
+			if tt.status == 201 {
+				expected := BudgetResponse{Category: "еда", Limit: 5000}
+				var created BudgetResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+					t.Fatal(err)
+				}
+				if created != expected {
+					t.Fatalf("created = %+v, want %+v", created, expected)
+				}
+				want = append(want, expected)
+			}
+
+			w = request(t, h, "GET", "/api/budgets", "", 200)
+			var got []BudgetResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("GET budgets = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestTransactionsHTTP(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		amount int
+		status int
+	}{
+		{"ok", transactionJSON(1000, "еда"), 1000, 201},
+		{"exact_limit", transactionJSON(3500, "еда"), 3500, 201},
+		{"exceeded", transactionJSON(3501, "еда"), 0, 409},
+		{"bad_json", `{"amount":`, 0, 400},
+		{"zero_amount", transactionJSON(0, "еда"), 0, 400},
+		{"negative_amount", transactionJSON(-100, "еда"), 0, 400},
+		{"empty_category", transactionJSON(100, ""), 0, 400},
+		{"bad_date", `{"amount":100,"category":"еда","date":"2026-02-30"}`, 0, 400},
 	}
 
-	if found != 1 {
-		t.Fatal("budget duplicated or missing")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetLedger(t)
+			h := NewHandler(log.New(io.Discard, "", 0))
+
+			request(t, h, "POST", "/api/budgets",
+				`{"category":"еда","limit":5000}`, 201)
+			w := request(t, h, "POST", "/api/transactions",
+				transactionJSON(1500, "еда"), 201)
+
+			first := TransactionResponse{
+				ID: 1, Amount: 1500, Category: "еда",
+				Description: "Ланч", Date: "2026-10-18",
+			}
+			var created TransactionResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+				t.Fatal(err)
+			}
+			if created != first {
+				t.Fatalf("first transaction = %+v, want %+v", created, first)
+			}
+			want := []TransactionResponse{first}
+
+			w = request(t, h, "POST", "/api/transactions", tt.body, tt.status)
+			if tt.status == 201 {
+				expected := TransactionResponse{
+					ID: 2, Amount: tt.amount, Category: "еда",
+					Description: "Ланч", Date: "2026-10-18",
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+					t.Fatal(err)
+				}
+				if created != expected {
+					t.Fatalf("created = %+v, want %+v", created, expected)
+				}
+				want = append(want, expected)
+			} else if tt.status == 409 {
+				if strings.TrimSpace(w.Body.String()) != `{"error":"budget exceeded"}` {
+					t.Fatalf("wrong budget error: %s", w.Body.String())
+				}
+			}
+
+			w = request(t, h, "GET", "/api/transactions", "", 200)
+			var got []TransactionResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("GET transactions = %+v, want %+v", got, want)
+			}
+		})
 	}
+}
+
+func TestLogging(t *testing.T) {
+	var logs bytes.Buffer
+	h := newHandler(&failingStore{}, log.New(&logs, "", 0))
+	request(t, h, "GET", "/api/transactions", "", 200)
+	request(t, h, "POST", "/api/budgets", "{", 400)
 
 	for _, fragment := range []string{
-		"method=POST",
-		"method=GET",
-		`path="/api/transactions"`,
-		`path="/api/budgets"`,
-		"duration=",
+		"method=GET", "method=POST", "duration=",
+		`path="/api/transactions"`, `path="/api/budgets"`,
 	} {
 		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("missing log %q", fragment)
+			t.Fatalf("missing log %q: %s", fragment, logs.String())
 		}
 	}
 }
@@ -334,9 +359,9 @@ func TestInternalErrors(t *testing.T) {
 }
 
 func TestConcurrentRequests(t *testing.T) {
+	resetLedger(t)
 	s := ledgerStore{}
-	before := len(s.ListTransactions())
-	category := fmt.Sprintf("concurrent-%d", before)
+	const category = "конкурентные запросы"
 
 	if err := s.SetBudget(ledger.Budget{
 		Category: category,
@@ -387,7 +412,13 @@ func TestConcurrentRequests(t *testing.T) {
 	ids := make(map[int]bool)
 
 	for w := range results {
+		if w.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+			t.Fatalf("wrong Content-Type: %q", w.Header().Get("Content-Type"))
+		}
 		if w.Code == 409 {
+			if strings.TrimSpace(w.Body.String()) != `{"error":"budget exceeded"}` {
+				t.Fatalf("wrong conflict response: %s", w.Body.String())
+			}
 			continue
 		}
 
@@ -405,7 +436,7 @@ func TestConcurrentRequests(t *testing.T) {
 		}
 
 		if ids[tx.ID] ||
-			tx.ID <= before ||
+			tx.ID <= 0 ||
 			tx.Category != category {
 			t.Fatalf("wrong ID or category: %+v", tx)
 		}
@@ -414,7 +445,7 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 
 	if len(ids) != 12 ||
-		len(s.ListTransactions()) != before+12 {
+		len(s.ListTransactions()) != 12 {
 		t.Fatal("concurrent budget check failed")
 	}
 }

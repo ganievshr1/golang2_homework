@@ -8,3 +8,7 @@ coverage.out
 .idea/
 .vscode/
 .DS_Store
+
+# Отчёты покрытия (генерируются командами из README)
+cover.out
+cover.html

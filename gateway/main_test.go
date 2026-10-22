@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"example.com/finance-services/ledger"
 )
 
 func TestGateway(t *testing.T) {
@@ -47,6 +49,9 @@ func TestGateway(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.method+tt.path, func(t *testing.T) {
+			ledger.Reset()
+			t.Cleanup(ledger.Reset)
+
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(tt.method, tt.path, nil)
 
