@@ -1,14 +1,13 @@
-# Результаты сборки и временные файлы
 bin/
 *.exe
 *.test
 coverage.out
-
-# Локальные настройки редакторов
+cover.out
+cover.html
+cover
+.env
+.env.*
+!.env.example
 .idea/
 .vscode/
 .DS_Store
-
-# Отчёты покрытия (генерируются командами из README)
-cover.out
-cover.html

@@ -15,30 +15,33 @@ func (p *validationProbe) Validate() error {
 	return p.err
 }
 
-func TestCheckValidDelegatesAndDoesNotStore(t *testing.T) {
-	resetTransactions(t)
-
+func TestCheckValid(t *testing.T) {
 	cause := errors.New("validation failed")
-	probe := &validationProbe{err: cause}
+	p := &validationProbe{err: cause}
 
-	if err := CheckValid(probe); err != cause || !probe.called {
-		t.Fatalf("Validate was not delegated correctly: %v", err)
+	if err := CheckValid(p); err != cause || !p.called {
+		t.Fatal("Validate was not delegated")
 	}
 
-	if err := CheckValid(nil); err == nil {
-		t.Fatal("nil must fail")
+	if CheckValid(nil) == nil {
+		t.Fatal("nil accepted")
 	}
 
-	for _, value := range []Validatable{
-		testTransaction(100, "еда"),
-		Budget{Category: "еда", Limit: 100},
-	} {
+	values := []Validatable{
+		Transaction{
+			Amount:   100,
+			Category: "еда",
+			Date:     "2026-10-30",
+		},
+		Budget{
+			Category: "еда",
+			Limit:    100,
+		},
+	}
+
+	for _, value := range values {
 		if err := CheckValid(value); err != nil {
 			t.Fatal(err)
 		}
-	}
-
-	if len(transactions) != 0 || len(budgets) != 0 {
-		t.Fatal("validation must not save objects")
 	}
 }

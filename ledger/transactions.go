@@ -1,6 +1,8 @@
 package ledger
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,10 +11,10 @@ import (
 
 type Transaction struct {
 	ID          int
-	Amount      int // Сумма в копейках.
+	Amount      int // Копейки в Go и HTTP, рубли в PostgreSQL.
 	Category    string
 	Description string
-	Date        string // Формат YYYY-MM-DD.
+	Date        string
 }
 
 func (tx Transaction) Validate() error {
@@ -22,85 +24,170 @@ func (tx Transaction) Validate() error {
 		)
 	}
 
+	if int64(tx.Amount) > maxMoney {
+		return errors.New(
+			"сумма превышает диапазон NUMERIC(14,2)",
+		)
+	}
+
 	if strings.TrimSpace(tx.Category) == "" {
 		return errors.New(
 			"категория транзакции не должна быть пустой",
 		)
 	}
 
-	if _, err := time.Parse("2006-01-02", tx.Date); err != nil {
+	date, err := time.Parse("2006-01-02", tx.Date)
+	if err != nil {
 		return fmt.Errorf(
 			"дата должна быть в формате YYYY-MM-DD: %w",
 			err,
 		)
 	}
 
-	return nil
-}
-
-// Хранилище существует только во время работы процесса.
-// Gateway синхронизирует обращения к нему через свой адаптер.
-var transactions = make([]Transaction, 0)
-
-func AddTransaction(tx Transaction) error {
-	if err := tx.Validate(); err != nil {
-		return fmt.Errorf("транзакция: %w", err)
-	}
-
-	if budget, ok := budgets[tx.Category]; ok {
-		var total int
-
-		for _, saved := range transactions {
-			if saved.Category == tx.Category {
-				var err error
-
-				total, err = addAmounts(total, saved.Amount)
-				if err != nil {
-					return err
-				}
-			}
-		}
-
-		nextTotal, err := addAmounts(total, tx.Amount)
-		if err != nil {
-			return err
-		}
-
-		if nextTotal > budget.Limit {
-			return fmt.Errorf(
-				"%w: категория %q, потрачено %d коп., новая сумма %d коп., лимит %d коп.",
-				ErrBudgetExceeded,
-				tx.Category,
-				total,
-				tx.Amount,
-				budget.Limit,
-			)
-		}
-	}
-
-	tx.ID = len(transactions) + 1
-	transactions = append(transactions, tx)
-
-	return nil
-}
-
-func addAmounts(a, b int) (int, error) {
-	maxInt := int(^uint(0) >> 1)
-	minInt := -maxInt - 1
-
-	if (b > 0 && a > maxInt-b) ||
-		(b < 0 && a < minInt-b) {
-		return 0, errors.New(
-			"сумма транзакций категории выходит за диапазон int",
+	if date.Year() < 1 {
+		return errors.New(
+			"год даты должен быть не меньше 0001",
 		)
 	}
 
-	return a + b, nil
+	return nil
 }
 
-func ListTransactions() []Transaction {
-	result := make([]Transaction, len(transactions))
-	copy(result, transactions)
+func AddTransaction(tx Transaction) error {
+	_, err := CreateTransaction(tx)
+	return err
+}
 
-	return result
+// Возвращает созданную транзакцию с ID из INSERT RETURNING.
+func CreateTransaction(item Transaction) (Transaction, error) {
+	if err := item.Validate(); err != nil {
+		return Transaction{}, fmt.Errorf(
+			"транзакция: %w",
+			err,
+		)
+	}
+
+	conn, err := database()
+	if err != nil {
+		return Transaction{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		operationTimeout,
+	)
+	defer cancel()
+
+	tx, err := conn.BeginTx(
+		ctx,
+		&sql.TxOptions{
+			Isolation: sql.LevelReadCommitted,
+		},
+	)
+	if err != nil {
+		return Transaction{}, err
+	}
+	defer tx.Rollback()
+
+	if err := lockCategory(ctx, tx, item.Category); err != nil {
+		return Transaction{}, err
+	}
+
+	var limit int64
+
+	err = tx.QueryRowContext(
+		ctx,
+		"SELECT (limit_amount * 100)::bigint FROM budgets WHERE category=$1",
+		item.Category,
+	).Scan(&limit)
+
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Transaction{}, err
+	}
+
+	if err == nil {
+		// Расчёт выполняется в SQL NUMERIC,
+		// чтобы не переполнить Go int при сложении.
+		var exceeded bool
+
+		err = tx.QueryRowContext(
+			ctx,
+			"SELECT COALESCE(SUM(amount), 0)*100 + $2::numeric > $3::numeric FROM expenses WHERE category=$1",
+			item.Category,
+			item.Amount,
+			limit,
+		).Scan(&exceeded)
+
+		if err != nil {
+			return Transaction{}, err
+		}
+
+		if exceeded {
+			return Transaction{}, ErrBudgetExceeded
+		}
+	}
+
+	err = tx.QueryRowContext(
+		ctx,
+		"INSERT INTO expenses(amount, category, description, date) VALUES($1::numeric/100, $2, $3, $4::date) RETURNING id",
+		item.Amount,
+		item.Category,
+		item.Description,
+		item.Date,
+	).Scan(&item.ID)
+
+	if err != nil {
+		return Transaction{}, fmt.Errorf(
+			"сохранение транзакции: %w",
+			err,
+		)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Transaction{}, err
+	}
+
+	return item, nil
+}
+
+func ListTransactions() ([]Transaction, error) {
+	conn, err := database()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		operationTimeout,
+	)
+	defer cancel()
+
+	rows, err := conn.QueryContext(
+		ctx,
+		"SELECT id, (amount*100)::bigint, category, COALESCE(description, ''), to_char(date, 'YYYY-MM-DD') FROM expenses ORDER BY date DESC, id DESC",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]Transaction, 0)
+
+	for rows.Next() {
+		var item Transaction
+
+		if err := rows.Scan(
+			&item.ID,
+			&item.Amount,
+			&item.Category,
+			&item.Description,
+			&item.Date,
+		); err != nil {
+			return nil, err
+		}
+
+		result = append(result, item)
+	}
+
+	return result, rows.Err()
 }

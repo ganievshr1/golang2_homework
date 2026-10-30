@@ -34,8 +34,6 @@ func newHandler(s store, logger *log.Logger) http.Handler {
 	})
 }
 
-// Явная маршрутизация позволяет возвращать JSON
-// также для неизвестных путей и неподдерживаемых методов.
 func (h *handler) ServeHTTP(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -60,6 +58,34 @@ func (h *handler) ServeHTTP(
 		default:
 			methodNotAllowed(w, "GET, POST")
 		}
+
+	case "/api/reports/summary":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, "GET")
+			return
+		}
+
+		result, err := h.store.GetReportSummary(
+			r.Context(),
+			r.URL.Query().Get("from"),
+			r.URL.Query().Get("to"),
+		)
+
+		if errors.Is(err, ledger.ErrInvalidPeriod) {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				err.Error(),
+			)
+			return
+		}
+
+		if err != nil {
+			h.internalError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
 
 	case "/ping":
 		if r.Method != http.MethodGet {
@@ -99,7 +125,11 @@ func (h *handler) createTransaction(
 	saved, err := h.store.AddTransaction(tx)
 
 	if errors.Is(err, ledger.ErrBudgetExceeded) {
-		writeError(w, http.StatusConflict, "budget exceeded")
+		writeError(
+			w,
+			http.StatusConflict,
+			"budget exceeded",
+		)
 		return
 	}
 
@@ -116,11 +146,23 @@ func (h *handler) createTransaction(
 }
 
 func (h *handler) listTransactions(w http.ResponseWriter) {
-	items := h.store.ListTransactions()
-	response := make([]TransactionResponse, 0, len(items))
+	items, err := h.store.ListTransactions()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	response := make(
+		[]TransactionResponse,
+		0,
+		len(items),
+	)
 
 	for _, tx := range items {
-		response = append(response, transactionResponse(tx))
+		response = append(
+			response,
+			transactionResponse(tx),
+		)
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -149,15 +191,27 @@ func (h *handler) createBudget(
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, budgetResponse(b))
+	writeJSON(
+		w,
+		http.StatusCreated,
+		budgetResponse(b),
+	)
 }
 
 func (h *handler) listBudgets(w http.ResponseWriter) {
-	items := h.store.ListBudgets()
+	items, err := h.store.ListBudgets()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
 	response := make([]BudgetResponse, 0, len(items))
 
 	for _, b := range items {
-		response = append(response, budgetResponse(b))
+		response = append(
+			response,
+			budgetResponse(b),
+		)
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -168,7 +222,11 @@ func readJSON(
 	r *http.Request,
 	destination any,
 ) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(
+		w,
+		r.Body,
+		maxBodyBytes,
+	)
 	defer r.Body.Close()
 
 	decoder := json.NewDecoder(r.Body)
@@ -202,8 +260,12 @@ func (h *handler) internalError(
 	)
 }
 
-func methodNotAllowed(w http.ResponseWriter, allow string) {
+func methodNotAllowed(
+	w http.ResponseWriter,
+	allow string,
+) {
 	w.Header().Set("Allow", allow)
+
 	writeError(
 		w,
 		http.StatusMethodNotAllowed,

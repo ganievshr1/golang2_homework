@@ -1,6 +1,8 @@
 package ledger
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +16,18 @@ type Budget struct {
 	Limit    int    `json:"limit"` // Копейки.
 }
 
+var ErrBudgetExceeded = errors.New("budget exceeded")
+
 func (b Budget) Validate() error {
 	if b.Limit <= 0 {
 		return errors.New(
 			"лимит бюджета должен быть положительным",
+		)
+	}
+
+	if int64(b.Limit) > maxMoney {
+		return errors.New(
+			"лимит превышает диапазон NUMERIC(14,2)",
 		)
 	}
 
@@ -30,21 +40,121 @@ func (b Budget) Validate() error {
 	return nil
 }
 
-var budgets = make(map[string]Budget)
-
-var ErrBudgetExceeded = errors.New("budget exceeded")
-
 func SetBudget(b Budget) error {
-	if err := b.Validate(); err != nil {
-		return fmt.Errorf("бюджет: %w", err)
+	return setBudgets([]Budget{b})
+}
+
+// Одна SQL-транзакция сохраняет весь пакет
+// или не сохраняет ничего.
+func setBudgets(items []Budget) error {
+	for _, b := range items {
+		if err := b.Validate(); err != nil {
+			return fmt.Errorf("бюджет: %w", err)
+		}
 	}
 
-	if budgets == nil {
-		budgets = make(map[string]Budget)
+	if len(items) == 0 {
+		return nil
 	}
 
-	budgets[b.Category] = b
-	return nil
+	conn, err := database()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		operationTimeout,
+	)
+	defer cancel()
+
+	tx, err := conn.BeginTx(
+		ctx,
+		&sql.TxOptions{
+			Isolation: sql.LevelReadCommitted,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Блокируем категории в одинаковом порядке.
+	categories := make(map[string]bool)
+
+	for _, b := range items {
+		categories[b.Category] = true
+	}
+
+	names := make([]string, 0, len(categories))
+
+	for category := range categories {
+		names = append(names, category)
+	}
+
+	sort.Strings(names)
+
+	for _, category := range names {
+		if err := lockCategory(ctx, tx, category); err != nil {
+			return err
+		}
+	}
+
+	for _, b := range items {
+		_, err := tx.ExecContext(
+			ctx,
+			"INSERT INTO budgets(category, limit_amount) VALUES($1, $2::numeric/100) ON CONFLICT(category) DO UPDATE SET limit_amount=EXCLUDED.limit_amount",
+			b.Category,
+			b.Limit,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"сохранение бюджета: %w",
+				err,
+			)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func ListBudgets() ([]Budget, error) {
+	conn, err := database()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		operationTimeout,
+	)
+	defer cancel()
+
+	rows, err := conn.QueryContext(
+		ctx,
+		"SELECT category, (limit_amount*100)::bigint FROM budgets ORDER BY category",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]Budget, 0)
+
+	for rows.Next() {
+		var b Budget
+
+		if err := rows.Scan(
+			&b.Category,
+			&b.Limit,
+		); err != nil {
+			return nil, err
+		}
+
+		result = append(result, b)
+	}
+
+	return result, rows.Err()
 }
 
 func LoadBudgets(r io.Reader) error {
@@ -61,7 +171,7 @@ func LoadBudgets(r io.Reader) error {
 
 	if err := decoder.Decode(&input); err != nil {
 		return fmt.Errorf(
-			"загрузка бюджетов: не удалось прочитать JSON-массив: %w",
+			"загрузка бюджетов: чтение JSON: %w",
 			err,
 		)
 	}
@@ -73,54 +183,19 @@ func LoadBudgets(r io.Reader) error {
 	}
 
 	var extra any
+
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err != nil {
 			return fmt.Errorf(
-				"загрузка бюджетов: ошибка чтения после JSON-массива: %w",
+				"загрузка бюджетов: данные после массива: %w",
 				err,
 			)
 		}
 
 		return errors.New(
-			"загрузка бюджетов: после массива обнаружено лишнее JSON-значение",
+			"загрузка бюджетов: лишнее JSON-значение",
 		)
 	}
 
-	// Сначала проверяем весь массив.
-	for i, item := range input {
-		if err := item.Validate(); err != nil {
-			return fmt.Errorf(
-				"загрузка бюджетов: объект %d: %w",
-				i+1,
-				err,
-			)
-		}
-	}
-
-	// Записываем только после успешной проверки.
-	for i, item := range input {
-		if err := SetBudget(item); err != nil {
-			return fmt.Errorf(
-				"загрузка бюджетов: объект %d: %w",
-				i+1,
-				err,
-			)
-		}
-	}
-
-	return nil
-}
-
-func ListBudgets() []Budget {
-	result := make([]Budget, 0, len(budgets))
-
-	for _, b := range budgets {
-		result = append(result, b)
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Category < result[j].Category
-	})
-
-	return result
+	return setBudgets(input)
 }

@@ -1,57 +1,49 @@
 package api
 
 import (
-	"sync"
+	"context"
 
 	"example.com/finance-services/ledger"
 )
 
-// store отделяет HTTP от вызовов Ledger
-// и позволяет воспроизводить внутренние ошибки в тестах.
 type store interface {
 	AddTransaction(ledger.Transaction) (ledger.Transaction, error)
-	ListTransactions() []ledger.Transaction
+	ListTransactions() ([]ledger.Transaction, error)
 	SetBudget(ledger.Budget) error
-	ListBudgets() []ledger.Budget
+	ListBudgets() ([]ledger.Budget, error)
+	GetReportSummary(
+		context.Context,
+		string,
+		string,
+	) (ledger.ReportSummary, error)
 }
 
 type ledgerStore struct{}
 
-// Ledger использует глобальные хранилища,
-// поэтому блокировка общая для всех обработчиков.
-var ledgerMu sync.Mutex
-
 func (ledgerStore) AddTransaction(
 	tx ledger.Transaction,
 ) (ledger.Transaction, error) {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
-	if err := ledger.AddTransaction(tx); err != nil {
-		return ledger.Transaction{}, err
-	}
-
-	all := ledger.ListTransactions()
-	return all[len(all)-1], nil
+	return ledger.CreateTransaction(tx)
 }
 
-func (ledgerStore) ListTransactions() []ledger.Transaction {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
+func (ledgerStore) ListTransactions() (
+	[]ledger.Transaction,
+	error,
+) {
 	return ledger.ListTransactions()
 }
 
 func (ledgerStore) SetBudget(b ledger.Budget) error {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
 	return ledger.SetBudget(b)
 }
 
-func (ledgerStore) ListBudgets() []ledger.Budget {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
+func (ledgerStore) ListBudgets() ([]ledger.Budget, error) {
 	return ledger.ListBudgets()
+}
+
+func (ledgerStore) GetReportSummary(
+	ctx context.Context,
+	from, to string,
+) (ledger.ReportSummary, error) {
+	return ledger.GetReportSummary(ctx, from, to)
 }
